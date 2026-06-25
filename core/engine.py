@@ -229,13 +229,25 @@ class EvolutionEngine:
                 pass
         
         self.config = config or {}
-        self.database = database or Database("db/evolution.db")
+        # 处理 database 参数：支持字符串路径或Database对象
+        if database is None:
+            self.database = Database("db/evolution.db")
+        elif isinstance(database, str):
+            # 字符串路径：创建Database对象
+            self.database = Database(database)
+        else:
+            # 已经是Database对象
+            self.database = database
+        
         self.repo_factory = RepositoryFactory(self.database)
         
         self.cycle_count = 0
         self.error_count = 0
         self.success_count = 0
         self.last_error_time = None
+        
+        # 初始化数据库表
+        self._init_database_tables()
         
         # 加载上次cycle_count
         self._load_cycle_count()
@@ -251,6 +263,41 @@ class EvolutionEngine:
         self._setup_desktop_log()
         
         logger.info(f"进化引擎初始化完成, cycle_count={self.cycle_count}, git_available={self.version_manager.use_git}")
+    
+    def _init_database_tables(self):
+        """初始化数据库表"""
+        try:
+            conn = self.database.get_connection()
+            cursor = conn.cursor()
+            
+            # 创建缺失的表
+            tables = [
+                """CREATE TABLE IF NOT EXISTS issues (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    type TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    severity TEXT DEFAULT 'medium',
+                    status TEXT DEFAULT 'open',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )""",
+                """CREATE TABLE IF NOT EXISTS evolution_analytics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    cycle INTEGER NOT NULL,
+                    phase TEXT NOT NULL,
+                    duration_seconds REAL,
+                    items_processed INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )""",
+            ]
+            
+            for table_sql in tables:
+                cursor.execute(table_sql)
+            
+            conn.commit()
+            logger.info("[DB] 表初始化完成")
+        except Exception as e:
+            logger.warning(f"[DB] 表初始化失败: {e}")
     
     def _load_cycle_count(self):
         """从数据库加载上次的cycle_count"""
@@ -456,7 +503,15 @@ class EvolutionEngine:
         """阶段4: ENCODE - 生成技能并保存到数据库"""
         logger.info("[ENCODE] 生成技能...")
         
-        from storage.models import Skill
+        try:
+            from ..storage.models import Skill
+        except ImportError:
+            # Fallback: 创建简单的Skill类
+            class Skill:
+                def __init__(self, name, code, fix_type):
+                    self.name = name
+                    self.code = code
+                    self.fix_type = fix_type
         
         if not analyses:
             analyses = [{"description": "系统正常", "analysis": "运行稳定", "fix_type": "none"}]
@@ -601,9 +656,19 @@ class EvolutionEngine:
     def _create_event(self, event_type: str, severity: str, message: str):
         """创建事件"""
         try:
-            from storage.models import Event
+            try:
+                from ..storage.models import Event
+            except ImportError:
+                # Fallback
+                class Event:
+                    def __init__(self, event_type, severity, message, phase):
+                        self.event_type = event_type
+                        self.severity = severity
+                        self.message = message
+                        self.phase = phase
             event = Event(event_type=event_type, severity=severity, message=message, phase="engine")
-            self.repo_factory.event_repo.create(event)
+            if hasattr(self, 'repo_factory') and self.repo_factory:
+                self.repo_factory.event_repo.create(event)
         except Exception as e:
             logger.warning(f"[EVENT] 创建失败: {e}")
     
@@ -1413,13 +1478,16 @@ class EvolutionEngine:
             
             # 统计各项数据
             cursor.execute("SELECT COUNT(*) FROM issues WHERE status = 'resolved'")
-            resolved = cursor.fetchone()[0] if cursor.fetchone() else 0
+            row = cursor.fetchone()
+            resolved = row[0] if row else 0
             
             cursor.execute("SELECT COUNT(*) FROM issues")
-            total_issues = cursor.fetchone()[0] if cursor.fetchone() else 0
+            row = cursor.fetchone()
+            total_issues = row[0] if row else 0
             
             cursor.execute("SELECT COUNT(*) FROM skills")
-            total_skills = cursor.fetchone()[0] if cursor.fetchone() else 0
+            row = cursor.fetchone()
+            total_skills = row[0] if row else 0
             
             # 获取成功率
             success_rate = (resolved / total_issues * 100) if total_issues > 0 else 0
@@ -1429,7 +1497,8 @@ class EvolutionEngine:
                 SELECT created_at FROM issues 
                 ORDER BY created_at DESC LIMIT 1
             """)
-            last_activity = cursor.fetchone()[0] if cursor.fetchone() else None
+            row = cursor.fetchone()
+            last_activity = row[0] if row else None
             
             return {
                 'cycle_count': self.cycle_count,
