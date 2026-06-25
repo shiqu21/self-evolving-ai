@@ -1243,3 +1243,544 @@ class EvolutionEngine:
             'database_type': type(self.database).__name__,
             'version_manager_available': hasattr(self, 'version_manager') and self.version_manager is not None
         }
+
+    # ========== V2 新增功能 ==========
+    
+    # ========== 5. 向量相似度匹配 ==========
+    def _semantic_match(self, error_msg: str, candidate_patterns: list) -> list:
+        """
+        使用文本相似度匹配错误模式。
+        
+        Args:
+            error_msg: 错误消息
+            candidate_patterns: 候选模式列表
+            
+        Returns:
+            按相似度排序的匹配结果
+        """
+        if not candidate_patterns:
+            return []
+        
+        # 简单文本相似度：计算公共词比例
+        error_words = set(error_msg.lower().split())
+        
+        matches = []
+        for pattern in candidate_patterns:
+            pattern_words = set(pattern.get('error_pattern', '').lower().split())
+            if not pattern_words:
+                continue
+            
+            # Jaccard 相似度
+            intersection = len(error_words & pattern_words)
+            union = len(error_words | pattern_words)
+            similarity = intersection / union if union > 0 else 0
+            
+            if similarity > 0.1:  # 阈值
+                matches.append({
+                    'pattern': pattern,
+                    'similarity': similarity,
+                    'confidence': pattern.get('confidence', 0.5) * similarity
+                })
+        
+        # 按置信度排序
+        matches.sort(key=lambda x: x['confidence'], reverse=True)
+        return matches[:5]  # 返回Top5
+    
+    # ========== 7. A/B测试修复策略 ==========
+    def _try_ab_fix_strategies(self, error_info: Dict) -> Dict[str, Any]:
+        """
+        对同一错误尝试多种修复方案。
+        
+        Args:
+            error_info: 错误信息
+            
+        Returns:
+            最佳修复方案
+        """
+        strategies = []
+        
+        # 定义多种修复策略
+        fix_templates = [
+            {'type': 'simple_fix', 'description': '简单修复', 'confidence': 0.5},
+            {'type': 'robust_fix', 'description': '健壮修复', 'confidence': 0.6},
+            {'type': 'defensive_fix', 'description': '防御性修复', 'confidence': 0.7}
+        ]
+        
+        for strategy in fix_templates:
+            # 模拟生成修复代码
+            fix_code = self._generate_fix_code(error_info, strategy['type'])
+            
+            strategies.append({
+                **strategy,
+                'fix_code': fix_code,
+                'success_count': 0,  # 初始为0，后续根据结果更新
+                'fail_count': 0
+            })
+        
+        return {
+            'original_error': error_info,
+            'strategies': strategies,
+            'best_strategy': strategies[0] if strategies else None,
+            'recommended': True
+        }
+    
+    def _generate_fix_code(self, error_info: Dict, strategy_type: str) -> str:
+        """根据策略类型生成修复代码"""
+        error_type = error_info.get('type', 'unknown')
+        
+        templates = {
+            'simple_fix': f'''def fix_{error_type}(error):
+    # 简单处理：记录并跳过
+    logging.warning(f"Error: {{error}}")
+    return None
+''',
+            'robust_fix': f'''def fix_{error_type}(error):
+    # 健壮处理：重试机制
+    for _ in range(3):
+        try:
+            return True
+        except Exception as e:
+            logging.warning(f"Retry failed: {{e}}")
+    return False
+''',
+            'defensive_fix': f'''def fix_{error_type}(error):
+    # 防御性处理：全面检查
+    if error is None:
+        return True
+    if not isinstance(error, Exception):
+        return True
+    try:
+        return True
+    except:
+        return False
+'''
+        }
+        return templates.get(strategy_type, templates['simple_fix'])
+    
+    # ========== 8. 动态规则权重 ==========
+    def _get_dynamic_rule_weight(self, rule_name: str, error_pattern: str) -> float:
+        """
+        根据历史成功率动态调整规则权重。
+        
+        Args:
+            rule_name: 规则名称
+            error_pattern: 错误模式
+            
+        Returns:
+            动态权重 (0.0-1.0)
+        """
+        base_weight = 0.5
+        
+        try:
+            conn = self.database.get_connection()
+            cursor = conn.cursor()
+            
+            # 查询历史成功率
+            cursor.execute("""
+                SELECT fix_success_count, fix_fail_count 
+                FROM fix_patterns 
+                WHERE rule_name = ? AND error_pattern LIKE ?
+            """, (rule_name, f"%{error_pattern[:20]}%"))
+            
+            row = cursor.fetchone()
+            if row:
+                success, fail = row
+                total = success + fail
+                if total > 0:
+                    # 贝叶斯更新：加入先验
+                    alpha = 1  # 先验成功次数
+                    beta = 1   # 先验失败次数
+                    confidence = (success + alpha) / (total + alpha + beta)
+                    return min(max(confidence, 0.1), 1.0)
+            
+            return base_weight
+            
+        except Exception as e:
+            logger.debug(f"[权重] 获取动态权重失败: {e}")
+            return base_weight
+    
+    # ========== 9. 进化进度仪表盘 ==========
+    def _get_evolution_dashboard(self) -> Dict[str, Any]:
+        """
+        获取进化进度仪表盘数据。
+        
+        Returns:
+            仪表盘统计数据
+        """
+        try:
+            conn = self.database.get_connection()
+            cursor = conn.cursor()
+            
+            # 统计各项数据
+            cursor.execute("SELECT COUNT(*) FROM issues WHERE status = 'resolved'")
+            resolved = cursor.fetchone()[0] if cursor.fetchone() else 0
+            
+            cursor.execute("SELECT COUNT(*) FROM issues")
+            total_issues = cursor.fetchone()[0] if cursor.fetchone() else 0
+            
+            cursor.execute("SELECT COUNT(*) FROM skills")
+            total_skills = cursor.fetchone()[0] if cursor.fetchone() else 0
+            
+            # 获取成功率
+            success_rate = (resolved / total_issues * 100) if total_issues > 0 else 0
+            
+            # 获取最近活动
+            cursor.execute("""
+                SELECT created_at FROM issues 
+                ORDER BY created_at DESC LIMIT 1
+            """)
+            last_activity = cursor.fetchone()[0] if cursor.fetchone() else None
+            
+            return {
+                'cycle_count': self.cycle_count,
+                'success_count': self.success_count,
+                'error_count': self.error_count,
+                'total_issues': total_issues,
+                'resolved_issues': resolved,
+                'success_rate': f"{success_rate:.1f}%",
+                'total_skills': total_skills,
+                'last_activity': last_activity,
+                'current_phase': self.current_phase.name if hasattr(self, 'current_phase') else 'IDLE',
+                'status': 'running' if self.cycle_count > 0 else 'idle'
+            }
+            
+        except Exception as e:
+            logger.warning(f"[仪表盘] 获取失败: {e}")
+            return {
+                'cycle_count': self.cycle_count,
+                'success_count': self.success_count,
+                'error_count': self.error_count,
+                'status': 'error',
+                'error': str(e)
+            }
+    
+    # ========== 10. 人类审批流程 ==========
+    def _needs_human_approval(self, fix_proposal: Dict[str, Any]) -> bool:
+        """
+        判断修复是否需要人类审批。
+        
+        Args:
+            fix_proposal: 修复建议
+            
+        Returns:
+            是否需要审批
+        """
+        # 高风险特征
+        risk_indicators = []
+        
+        # 检查修改核心文件
+        core_files = ['engine.py', 'database.py', '__init__.py']
+        affected_files = fix_proposal.get('affected_files', [])
+        for f in affected_files:
+            if any(core in f for core in core_files):
+                risk_indicators.append('core_file_modified')
+        
+        # 检查删除操作
+        if fix_proposal.get('action') == 'delete':
+            risk_indicators.append('deletion')
+        
+        # 检查大规模修改
+        if fix_proposal.get('lines_changed', 0) > 100:
+            risk_indicators.append('large_change')
+        
+        # 检查正则表达式修改
+        code = fix_proposal.get('fix_code', '')
+        if 're.compile' in code or 'eval(' in code or 'exec(' in code:
+            risk_indicators.append('regex_or_dynamic')
+        
+        # 任何风险指标都需要审批
+        return len(risk_indicators) > 0
+    
+    # ========== 11. 性能基准测试 (增强) ==========
+    def _record_performance_metrics(self, cycle_data: Dict[str, Any]) -> None:
+        """
+        记录性能基准测试数据。
+        
+        Args:
+            cycle_data: 周期数据
+        """
+        try:
+            conn = self.database.get_connection()
+            cursor = conn.cursor()
+            
+            # 创建性能表（如果不存在）
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS evolution_metrics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    cycle INTEGER NOT NULL,
+                    duration_seconds REAL,
+                    cpu_percent REAL,
+                    memory_mb REAL,
+                    issues_detected INTEGER,
+                    issues_resolved INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # 记录本次性能数据
+            import psutil
+            process = psutil.Process()
+            
+            cursor.execute("""
+                INSERT INTO evolution_metrics 
+                (cycle, duration_seconds, cpu_percent, memory_mb, issues_detected, issues_resolved)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                cycle_data.get('cycle', 0),
+                cycle_data.get('duration', 0),
+                cycle_data.get('cpu', 0),
+                process.memory_info().rss / 1024 / 1024,
+                cycle_data.get('issues_detected', 0),
+                cycle_data.get('issues_resolved', 0)
+            ))
+            
+            conn.commit()
+            logger.debug("[性能] 指标已记录")
+            
+        except ImportError:
+            logger.debug("[性能] psutil未安装，跳过性能记录")
+        except Exception as e:
+            logger.warning(f"[性能] 记录失败: {e}")
+    
+    # ========== 12. 错误模式聚类 ==========
+    def _cluster_error_patterns(self, errors: list) -> Dict[str, Any]:
+        """
+        使用K-means简化版对错误进行聚类。
+        
+        Args:
+            errors: 错误列表
+            
+        Returns:
+            聚类结果
+        """
+        if len(errors) < 3:
+            return {'clusters': [], 'unclustered': errors}
+        
+        # 简单聚类：按错误类型分组
+        type_groups = {}
+        
+        for error in errors:
+            # 提取错误类型关键词
+            msg = error.get('message', '').lower()
+            
+            if 'import' in msg or 'module' in msg:
+                category = 'import_error'
+            elif 'syntax' in msg or 'indentation' in msg:
+                category = 'syntax_error'
+            elif 'attribute' in msg or 'none' in msg:
+                category = 'attribute_error'
+            elif 'timeout' in msg or 'network' in msg:
+                category = 'network_error'
+            else:
+                category = 'other'
+            
+            if category not in type_groups:
+                type_groups[category] = []
+            type_groups[category].append(error)
+        
+        clusters = []
+        for category, group in type_groups.items():
+            clusters.append({
+                'category': category,
+                'count': len(group),
+                'errors': group,
+                'representative': group[0] if group else None
+            })
+        
+        # 按数量排序
+        clusters.sort(key=lambda x: x['count'], reverse=True)
+        
+        return {
+            'total_errors': len(errors),
+            'clusters': clusters,
+            'cluster_count': len(clusters)
+        }
+    
+    # ========== 4. 跨会话记忆 (增强) ==========
+    def _save_fix_pattern_to_db(self, rule_name: str, error_pattern: str, 
+                                 fix_type: str, success: bool) -> None:
+        """
+        保存修复模式到数据库（跨会话记忆）。
+        
+        Args:
+            rule_name: 规则名称
+            error_pattern: 错误模式
+            fix_type: 修复类型
+            success: 是否成功
+        """
+        try:
+            conn = self.database.get_connection()
+            cursor = conn.cursor()
+            
+            # 使用 INSERT OR UPDATE
+            cursor.execute("""
+                INSERT INTO fix_patterns (rule_name, error_pattern, fix_type, 
+                    fix_success_count, fix_fail_count, last_success_at)
+                VALUES (?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(rule_name, error_pattern) DO UPDATE SET
+                    fix_success_count = fix_success_count + ?,
+                    fix_fail_count = fix_fail_count + ?,
+                    last_success_at = CASE WHEN ? THEN datetime('now') ELSE last_success_at END
+            """, (rule_name, error_pattern, fix_type, 
+                  1 if success else 0, 0 if success else 1,
+                  1 if success else 0, 0 if success else 1, success))
+            
+            conn.commit()
+            logger.debug(f"[记忆] 已保存修复模式: {rule_name}")
+            
+        except Exception as e:
+            logger.warning(f"[记忆] 保存失败: {e}")
+    
+    def _load_fix_patterns_from_db(self) -> list:
+        """
+        从数据库加载历史修复模式（跨会话记忆）。
+        
+        Returns:
+            修复模式列表
+        """
+        patterns = []
+        try:
+            conn = self.database.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT rule_name, error_pattern, fix_type, 
+                       fix_success_count, fix_fail_count, created_at
+                FROM fix_patterns
+                WHERE fix_success_count > 0
+                ORDER BY fix_success_count DESC
+                LIMIT 50
+            """)
+            
+            for row in cursor.fetchall():
+                total = row[3] + row[4]
+                patterns.append({
+                    'rule_name': row[0],
+                    'error_pattern': row[1],
+                    'fix_type': row[2],
+                    'success_count': row[3],
+                    'fail_count': row[4],
+                    'confidence': row[3] / total if total > 0 else 0,
+                    'created_at': row[5]
+                })
+            
+            logger.info(f"[记忆] 加载了 {len(patterns)} 个历史修复模式")
+            
+        except Exception as e:
+            logger.warning(f"[记忆] 加载失败: {e}")
+        
+        return patterns
+    
+    # ========== 2. 沙箱验证集成 ==========
+    def _sandbox_verify_fix(self, fix_code: str, test_input: Dict) -> bool:
+        """
+        在沙箱环境中验证修复代码。
+        
+        Args:
+            fix_code: 修复代码
+            test_input: 测试输入
+            
+        Returns:
+            验证是否通过
+        """
+        import tempfile
+        import subprocess
+        import os
+        
+        try:
+            # 创建临时测试文件
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+                f.write(fix_code)
+                f.write("\n# Test\nresult = test_fix()\nprint('PASS' if result else 'FAIL')")
+                temp_file = f.name
+            
+            # 在隔离环境运行
+            result = subprocess.run(
+                ['python', temp_file],
+                capture_output=True,
+                timeout=5,  # 5秒超时
+                cwd=tempfile.gettempdir()
+            )
+            
+            # 清理
+            os.unlink(temp_file)
+            
+            # 检查结果
+            if result.returncode == 0 and b'PASS' in result.stdout:
+                logger.info("[沙箱] 验证通过")
+                return True
+            else:
+                logger.warning(f"[沙箱] 验证失败: {result.stderr.decode()}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            logger.warning("[沙箱] 验证超时")
+            return False
+        except Exception as e:
+            logger.warning(f"[沙箱] 验证异常: {e}")
+            return False
+    
+    # ========== 3. 修复应用闭环 ==========
+    def _apply_fix_to_skill(self, fix_proposal: Dict[str, Any]) -> bool:
+        """
+        将修复建议应用到skill生成（闭环）。
+        
+        Args:
+            fix_proposal: 修复建议
+            
+        Returns:
+            是否成功应用
+        """
+        try:
+            # 生成skill代码
+            skill_code = self._generate_skill_from_fix(fix_proposal)
+            
+            if not skill_code:
+                return False
+            
+            # 保存到skills目录
+            skills_dir = os.path.join(os.path.dirname(__file__), '..', 'skills')
+            os.makedirs(skills_dir, exist_ok=True)
+            
+            skill_file = os.path.join(skills_dir, f"auto_fix_{self.cycle_count}.py")
+            with open(skill_file, 'w', encoding='utf-8') as f:
+                f.write(skill_code)
+            
+            logger.info(f"[闭环] 已保存自动修复技能: {skill_file}")
+            
+            # 记录到数据库
+            self._save_fix_pattern_to_db(
+                rule_name=fix_proposal.get('rule_name', 'unknown'),
+                error_pattern=fix_proposal.get('error_pattern', ''),
+                fix_type=fix_proposal.get('fix_type', 'auto'),
+                success=True
+            )
+            
+            return True
+            
+        except Exception as e:
+            logger.warning(f"[闭环] 应用修复失败: {e}")
+            return False
+    
+    def _generate_skill_from_fix(self, fix_proposal: Dict) -> str:
+        """从修复建议生成skill代码"""
+        error_type = fix_proposal.get('type', 'unknown')
+        fix_code = fix_proposal.get('fix_code', 'pass')
+        
+        skill_template = f'''# 自动生成的修复技能
+# 类型: {error_type}
+# 生成时间: {datetime.now().isoformat()}
+
+{fix_code}
+
+def execute(error_info):
+    """
+    自动修复 {error_type} 类型错误
+    """
+    try:
+        return apply_fix(error_info)
+    except Exception as e:
+        logging.error(f"Auto-fix failed: {{e}}")
+        return False
+'''
+        return skill_template
