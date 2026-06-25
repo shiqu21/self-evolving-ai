@@ -1,0 +1,191 @@
+classDiagram
+    class EvolutionEngine {
+        +int cycle_count
+        +bool running
+        +run_cycle() CycleResult
+        +_phase_operate() AgentResult
+        +_phase_detect() Dict
+        +_phase_analyze() Dict
+        +_phase_encode() Dict
+        +_phase_verify() Dict
+    }
+
+    class QualityPipeline {
+        +str pipeline_id
+        +list stages
+        +execute(content) PipelineResult
+        +add_stage(stage)
+    }
+
+    class Stage {
+        +str name
+        +str description
+        +execute(content) StageResult
+        +skip() bool
+    }
+
+    class Orchestrator {
+        +dict agents
+        +delegate(task, agent_type) AgentResult
+        +manage_dependencies(tasks)
+        +coordinate() WorkflowResult
+    }
+
+    class BaseAgent {
+        +str agent_type
+        +LLMClient llm
+        +execute(context) AgentResult
+    }
+
+    class EventMonitor {
+        +scan_sessions() List~Event~
+        +create_report(events) EventReport
+    }
+
+    class EventAnalyst {
+        +analyze(event) AnalysisResult
+        +generate_proposal(analysis) Proposal
+    }
+
+    class CodeReviewer {
+        +review(code) ReviewResult
+        +check_quality(code) QualityScore
+    }
+
+    class Arbiter {
+        +make_decision(quality_report) Decision
+        +should_escalate(quality_score) bool
+    }
+
+    class SkillWriter {
+        +generate(gap_analysis) Skill
+        +fill_capability_gap(capability) Skill
+    }
+
+    class TokenOptimizer {
+        +optimize(usage) OptimizationResult
+        +compress_prompt(prompt) str
+    }
+
+    class SensoryBuffer {
+        +list buffer
+        +capture(session_data)
+        +get_all() List
+        +get_recent(limit) List
+        +clear()
+    }
+
+    class Hippocampus {
+        +MemoryRepository memory_repo
+        +encode(buffer_data) List~Fact~
+        +extract_facts(raw_data) List~str~
+    }
+
+    class Cortex {
+        +MemoryRepository memory_repo
+        +integrate(facts)
+        +recall(topic) List~Memory~
+        +search(query) List~Memory~
+        +get_important(min_importance) List~Memory~
+    }
+
+    class GEPA {
+        +optimize(prompt_variants) List~OptimizedPrompt~
+        +select_best(prompts) Prompt
+        +mutate(prompt) Prompt
+        +crossover(prompt1, prompt2) Prompt
+        +evaluate(prompt) float
+    }
+
+    class CronScheduler {
+        +APScheduler scheduler
+        +schedule(cron_expr, func)
+        +run_now(func)
+        +get_status() SchedulerStatus
+    }
+
+    class SkillGenerator {
+        +pipeline(gap_analysis) Skill
+        +validate_skill(skill) ValidationResult
+        +deploy_skill(skill)
+    }
+
+    class Skill {
+        +int id
+        +str name
+        +str description
+        +str content
+        +str skill_type
+        +str risk_level
+        +str status
+    }
+
+    class Event {
+        +int id
+        +str event_type
+        +str phase
+        +str severity
+        +str description
+        +Dict context
+        +datetime timestamp
+    }
+
+    class Memory {
+        +int id
+        +str topic
+        +str content
+        +str memory_type
+        +float importance
+        +int access_count
+        +datetime created_at
+    }
+
+    class CycleResult {
+        +int cycle_id
+        +bool success
+        +list phases_completed
+        +int events_created
+        +int skills_improved
+        +float quality_score
+        +float duration
+    }
+
+    class PipelineResult {
+        +str pipeline_id
+        +float overall_score
+        +dict stage_results
+        +bool passed
+        +bool escalation_needed
+        +str arbiter_decision
+    }
+
+    class AgentResult {
+        +str agent_type
+        +bool success
+        +Dict data
+        +str message
+        +int tokens_used
+        +float cost_usd
+    }
+
+    EvolutionEngine "1" *-- "1" Orchestrator
+    EvolutionEngine "1" *-- "1" QualityPipeline
+    EvolutionEngine "1" *-- "1" SensoryBuffer
+    EvolutionEngine "1" *-- "1" GEPA
+    EvolutionEngine "1" *-- "1" CronScheduler
+
+    Orchestrator "1" *-- "7" BaseAgent
+    QualityPipeline "1" *-- "8" Stage
+
+    SensoryBuffer "1" --> "1" Hippocampus
+    Hippocampus "1" --> "1" Cortex
+
+    BaseAgent <|-- EventMonitor
+    BaseAgent <|-- EventAnalyst
+    BaseAgent <|-- CodeReviewer
+    BaseAgent <|-- Arbiter
+    BaseAgent <|-- SkillWriter
+    BaseAgent <|-- TokenOptimizer
+
+    GEPA "1" *-- "1" SkillGenerator
+    SkillGenerator "1" --> "1" Skill

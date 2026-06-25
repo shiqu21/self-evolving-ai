@@ -1,0 +1,120 @@
+sequenceDiagram
+    participant User as 用户/定时任务
+    participant Main as main.py
+    participant Engine as EvolutionEngine
+    participant Buffer as SensoryBuffer
+    participant Orchestrator as Orchestrator
+    participant EventMonitor as EventMonitor
+    participant EventAnalyst as EventAnalyst
+    participant SkillWriter as SkillWriter
+    participant Pipeline as QualityPipeline
+    participant Hippocampus as Hippocampus
+    participant Cortex as Cortex
+    participant Storage as Storage
+
+    Note over User,Main: 启动入口
+    User->>Main: python main.py run-cycle
+    activate Main
+
+    Main->>Engine: run_cycle()
+    activate Engine
+
+    Note over Engine: 阶段1: OPERATE
+    Engine->>Engine: _phase_operate()
+    Engine->>Storage: 读取活跃技能
+    Storage-->>Engine: skill_list
+    Engine->>Buffer: capture(operate_result)
+
+    Note over Engine: 阶段2: DETECT
+    Engine->>Orchestrator: delegate("detect", EventMonitor)
+    activate Orchestrator
+    Orchestrator->>EventMonitor: scan_sessions()
+    activate EventMonitor
+    EventMonitor->>Storage: 查询最近错误/日志
+    Storage-->>EventMonitor: events
+    EventMonitor->>EventMonitor: create_report()
+    EventMonitor-->>Orchestrator: EventReport
+    deactivate EventMonitor
+    Orchestrator-->>Engine: detection_result
+    deactivate Orchestrator
+    Engine->>Buffer: capture(detection_issues)
+
+    Note over Engine: 阶段3: ANALYZE
+    Engine->>Orchestrator: delegate("analyze", EventAnalyst)
+    activate Orchestrator
+    Orchestrator->>EventAnalyst: analyze(detection_issues)
+    activate EventAnalyst
+    EventAnalyst->>EventAnalyst: analyze_root_cause()
+    EventAnalyst->>EventAnalyst: generate_proposal()
+    EventAnalyst-->>Orchestrator: AnalysisResult
+    deactivate EventAnalyst
+    Orchestrator-->>Engine: analysis_result
+    deactivate Orchestrator
+    Engine->>Buffer: capture(analyses)
+
+    Note over Engine: 阶段4: ENCODE
+    Engine->>Orchestrator: delegate("encode", SkillWriter)
+    activate Orchestrator
+    Orchestrator->>SkillWriter: fill_capability_gap(analysis_result)
+    activate SkillWriter
+    SkillWriter->>SkillWriter: generate()
+    SkillWriter->>Storage: save_skill()
+    Storage-->>SkillWriter: skill_id
+    SkillWriter-->>Orchestrator: Skill
+    deactivate SkillWriter
+    Orchestrator-->>Engine: encode_result
+    deactivate Orchestrator
+    Engine->>Buffer: capture(generated_skills)
+
+    Note over Engine: 阶段5: VERIFY (质量管道)
+    Engine->>Pipeline: execute(generated_skills)
+    activate Pipeline
+
+    Note over Pipeline: 8阶段管道
+    Pipeline->>Pipeline: WRITE阶段
+    Pipeline->>Pipeline: TYPECHECK阶段 (mypy)
+    Pipeline->>Pipeline: TEST阶段 (pytest)
+    Pipeline->>Pipeline: LINT阶段 (flake8)
+    Pipeline->>Pipeline: CRITIQUE阶段 (AI评审)
+    Pipeline->>Pipeline: REFINE阶段 (如需优化)
+    Pipeline->>Pipeline: ESCALATE阶段 (升级判断)
+    Pipeline->>Pipeline: ARBITER阶段 (最终仲裁)
+
+    Pipeline-->>Engine: verify_result
+    deactivate Pipeline
+
+    Note over Engine: 记忆编码
+    Engine->>Buffer: get_all()
+    Buffer-->>Engine: all_buffer_data
+
+    Engine->>Hippocampus: encode(all_buffer_data)
+    activate Hippocampus
+    Hippocampus->>Hippocampus: extract_facts()
+    Hippocampus-->>Engine: encoded_facts
+    deactivate Hippocampus
+
+    Engine->>Cortex: integrate(encoded_facts)
+    activate Cortex
+    Cortex->>Cortex: 去重/组织
+    Cortex->>Storage: 持久化
+    Storage-->>Cortex: memory_id
+    Cortex-->>Engine: integrated
+    deactivate Cortex
+
+    Engine->>Buffer: clear()
+
+    Engine-->>Main: CycleResult
+    deactivate Engine
+
+    Main-->>User: 循环完成输出
+    deactivate Main
+
+    Note over User,Main: 定时任务模式 (可选)
+    User->>Main: 启动守护进程
+    activate Main
+    Main->>Engine: 注册定时任务
+    Engine->>Engine: schedule(cron="0 2 * * *", callback=run_cycle)
+    loop 每日凌晨2点
+        CronTrigger->>Engine: 触发
+        Engine->>Engine: run_cycle()
+    end

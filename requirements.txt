@@ -1,0 +1,15 @@
+# 完美自我进化系统依赖
+# 参考Hermes Agent Self-Evolution / OpenClaw最佳实践
+
+# 核心依赖
+python-dotenv==1.0.0        # 环境变量管理
+PyYAML==6.0.1                # YAML配置文件支持
+SQLAlchemy==2.0.21           # 数据库连接池
+apscheduler==3.10.4         # 定时任务调度
+schedule==1.2.0             # 简单定时任务
+requests==2.31.0            # HTTP请求
+
+# 开发/测试依赖（可选）
+# pytest==7.4.0              # 单元测试
+# pytest-async==0.21.0       # 异步测试
+# pytest-cov==4.1.0          # 测试覆盖率
